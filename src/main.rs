@@ -11,7 +11,7 @@ use clap::{Arg, App};
 
 fn connect<T: serial::SerialPort> (port: &mut T) -> io::Result<()>{
     port.reconfigure(&|settings| {
-        (settings.set_baud_rate(serial::Baud9600))?;
+        (settings.set_baud_rate(serial::Baud115200))?;
         settings.set_char_size(serial::Bits8);
         settings.set_parity(serial::ParityNone);
         settings.set_stop_bits(serial::Stop1);
@@ -35,7 +35,7 @@ fn read_line<T: serial::SerialPort> (port: &mut T) -> Option<String>{
             };
         }
     }
-
+    println!("received string: {:?}", received_string);
     Some(received_string)
 }
 
@@ -45,24 +45,34 @@ struct FilterNode {
 
 fn send_line(port: &mut serial::SerialPort, st: String){
     port.write(st.as_bytes());
-    port.write(b"\n\r");
+    port.write(b"\r\n");
+
+    println!("Send: {:?}{:?}", st, "\r\n")
+}
+
+fn await_line<T: serial::SerialPort>(port: &mut T, st: String) -> Result<(), &str>{
+    let search_line = st + "\r\n";
+    let line :String = match read_line(port) {
+        Some(input) => Ok(input),
+        _           => Err("No Connection")
+    }?;
+
+    if line.eq(&search_line) {Ok(())} else {Err("No reply")}
 }
 
 fn handshake<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
     let node  :FilterNode;
 
-    let line = match read_line(port) {
+    let line :String = match read_line(port) {
         Some(input) => Ok(input),
         _           => Err("No Connection")
     }?;
 
-    let is_known = match &line[..]{
-        "UPP-HANDSHAKEM0\r\n" => Ok(FilterNode{name: "hallo".to_string()}),
-        _                     => Err("Unknown Device")
-    };
+    let node = match &line[..]{
+        "UPP-FILTER\r\n" => Ok(FilterNode{name: "hallo".to_string()}),
+        _              => Err("Unknown Device")
+    }?;
 
-    node = is_known?;
-    send_line(port, line);
 
     Ok(node)
 
@@ -82,14 +92,21 @@ fn process_arguments<'T>() -> clap::ArgMatches<'T>{
     matches
 }
 
-fn pollHandshake<T: serial::SerialDevice>(port: &mut T, trial :i32, trials: i32) -> Option<FilterNode>{
+fn pollHandshake<T: serial::SerialPort>(port: &mut T, trial :i32, trials: i32) -> Option<FilterNode>{
+    println!("Try to read Handshake: trial {:?} of {:?}", trial, trials);
     match handshake(port){
         Ok(node) => Some(node),
         Err(_)   => {
-            if trials < trial {
+            if trial < trials {
                 pollHandshake(port, trial + 1, trials)
-            } else {None}}
+            } else {None}
+        }
     }
+}
+
+fn send_acknowledge<T: serial::SerialPort>(port: &mut T){
+    println!("Send Acknowledge");
+    send_line(port, "UPP-ACK".to_string());
 }
 
 fn main() {
@@ -99,7 +116,23 @@ fn main() {
     println!("Open {:?}", device);
 
     let mut port = serial::open(device).unwrap();
-    let node     = handshake(&mut port).unwrap();
+
+    let node :FilterNode = match pollHandshake(&mut port, 0, 10){
+        Some(node) => node,
+        None => return
+    };
+
+    send_acknowledge(&mut port);
+
+    std::thread::sleep_ms(50);
+
+    println!("Send Handshake");
+    send_line(&mut port, "UPP-HUB".to_string());
 
 
+    println!("Wait for Acknowledge");
+    match await_line(&mut port, "UPP-ACK".to_string()){
+        Ok(_)  => println!("Acknowledged"),
+        Err(_) => println!("Unknown"),
+    }
 }
