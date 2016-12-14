@@ -1,0 +1,8 @@
+[package]
+name = "UPPServer"
+version = "0.1.0"
+authors = ["Benjamin Skirlo <benjamin.skirlo@ixds.com>"]
+
+[dependencies]
+clap = "2.19.1"
+serial = "0.3.4"
