@@ -3,11 +3,47 @@
  */
 extern crate clap;
 extern crate serial;
+extern crate regex;
 
 use std::io;
 use std::time::Duration;
+use regex::Regex;
+use std::collections::HashMap;
 
 use clap::{Arg, App};
+
+fn load_upp_commands() -> HashMap<String, Regex>{
+    let mut commands :HashMap<String, Regex> = HashMap::new();
+    commands.insert(
+        "UPP-FILTER".to_string(),
+        Regex::new(r"^UPP-FILTER v(?P<version>[:digit:]{3}) (?P<name>[:alphanum:]*)").unwrap()
+    );
+
+    commands
+}
+
+struct Sensor{
+    name :String,
+    pictogram :[u16; 16]
+}
+
+fn load_sensors() -> HashMap<String, Sensor>{
+    let mut sensors :HashMap<String, Sensor> = HashMap::new();
+    let potentiometer = Sensor{
+        name: "potentiometer".to_string(),
+        pictogram: [0; 16]
+    };
+
+    let light_sensor = Sensor{
+        name: "light".to_string(),
+        pictogram: [0; 16]
+    };
+
+    sensors.insert(potentiometer.name.clone(), potentiometer);
+    sensors.insert(light_sensor .name.clone(), light_sensor);
+
+    sensors
+}
 
 fn connect<T: serial::SerialPort> (port: &mut T) -> io::Result<()>{
     port.reconfigure(&|settings| {
@@ -54,10 +90,18 @@ fn await_line<T: serial::SerialPort>(port: &mut T, st: String) -> Result<(), &st
     let search_line = st + "\r\n";
     let line :String = match read_line(port) {
         Some(input) => Ok(input),
-        _           => Err("No Connection")
+                  _ => Err("No Connection")
     }?;
 
     if line.eq(&search_line) {Ok(())} else {Err("No reply")}
+}
+
+fn await_acknowledge<T: serial::SerialPort>(port: &mut T) -> Result<(), &str>{
+    await_line(port, "UPP-ACK".to_string())
+//        {
+//        Ok(_)  => {println!("Acknowledged"); Ok(())},
+//        Err(e) => {println!("Failure in communication"); Err(e)},
+//    }
 }
 
 fn handshake<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
@@ -65,13 +109,15 @@ fn handshake<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
 
     let line :String = match read_line(port) {
         Some(input) => Ok(input),
-        _           => Err("No Connection")
+                  _ => Err("No Connection")
     }?;
 
     let node = match &line[..]{
         "UPP-FILTER\r\n" => Ok(FilterNode{name: "hallo".to_string()}),
-        _              => Err("Unknown Device")
+                       _ => Err("Unknown Device")
     }?;
+
+
 
 
     Ok(node)
@@ -109,6 +155,7 @@ fn send_acknowledge<T: serial::SerialPort>(port: &mut T){
     send_line(port, "UPP-ACK".to_string());
 }
 
+
 fn main() {
 
     let matches = process_arguments();
@@ -129,10 +176,12 @@ fn main() {
     println!("Send Handshake");
     send_line(&mut port, "UPP-HUB".to_string());
 
-
     println!("Wait for Acknowledge");
-    match await_line(&mut port, "UPP-ACK".to_string()){
-        Ok(_)  => println!("Acknowledged"),
-        Err(_) => println!("Unknown"),
-    }
+
+
+    let sensors :HashMap<String, Sensor> = load_sensors();
+    send_line(&mut port, "UPP-LIST SENSOR 2".to_string());
+    assert!(await_acknowledge(&mut port).is_ok());
+
+
 }

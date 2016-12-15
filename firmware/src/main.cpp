@@ -4,15 +4,16 @@
 
 #include <Arduino.h>
 #include <SerialCommand.h>
-#define SERIALCOMMAND_DEBUG
+#include <Base64.h>
+
 SerialCommand SCmd;
 
 #define notImplemented Serial.print("function not implemented"); return;
 
 int _logI = 0;
-#define _logLevel 0
+#define _logLevel 1
 template<typename T>
-void log(int level, T msg){
+void log(int level, T msg){ //TODO:rewrite to macro
     if(level > _logLevel) return;
     Serial.print("log[");
     Serial.print(++_logI);
@@ -28,6 +29,9 @@ enum State{
     HANDSHAKE_STATE,
     RECEIVING_SENSOR_LIST_STATE,
     DISPLAY_SENSORS_STATE,
+    RECEIVE_INITIAL_DATA_STATE,
+    RECEIVE_LIST_STATE,
+    LENGTH_OF_STATES
 };
 
 
@@ -35,13 +39,29 @@ enum State{
 #define UPP_ERROR            "UPP-ERR"
 #define UPP_HUB_HANDSHAKE    "UPP-HUB"
 #define UPP_FILTER_HANDSHAKE "UPP-FILTER"
+#define UPP_LIST             "UPP-LIST"
+#define UPP_ENTRY            "UPP-ENTRY"
+
+enum List{
+    NO_LIST,
+    SENSOR_LIST,
+    LENGTH_OF_LISTS
+};
+
+struct Sensor{
+    String   name;
+    char   * graphic;
+};
 
 struct Store {
     Store * old_store       = 0;
-    int    __depth          = 0;
-    bool   dirty            = false;
-    bool   hub_acknowledged = false;
-    State  state            = State::STARTUP_STATE;
+    int      __depth          = 0;
+    bool     dirty            = false;
+    bool     hub_acknowledged = false;
+    State    state            = State::STARTUP_STATE;
+    Sensor * sensors;
+    int      sensors_list_length = 0;
+    int      received_from_list  = 0;
 } __store;
 
 void debug_store(Store _store = __store){
@@ -65,14 +85,30 @@ void debug_store(Store _store = __store){
 
 struct Action{ };
 
-struct NoAction             :Action {};
-struct AcknowledgeAction    :Action {};
-struct HandshakeAction      :Action {};
-struct StartHandshakeAction :Action {};
-struct EvaluateAction       :Action {};
+struct NoAction               :Action {};
+struct AcknowledgeAction      :Action {};
+struct HandshakeAction        :Action {};
+struct StartHandshakeAction   :Action {};
+struct EvaluateAction         :Action {};
+struct ReceiveListAction      :Action {};
+struct ReceiveListEntryAction :Action {};
 
 
+int is_acknowledged(const Store &store) {
+    if(!store.hub_acknowledged){
+        log(0,"Hub is not acknowledged");
+        return 1;
+    }
+    return 0;
+}
 
+int is_right_state(const Store &store, State state) {
+    if(store.state != state){
+        log(0, "Currently in the wrong state");
+        return 1;
+    }
+    return 0;
+}
 
 template <typename T>
 void rx(T action){
@@ -87,7 +123,6 @@ void tx(String message, bool awaiting_acknowledgement = false){
     if(awaiting_acknowledgement)rx(EvaluateAction());
     Serial.print(message);
     Serial.println();
-
 }
 
 Store rx(EvaluateAction _, Store store){
@@ -116,7 +151,7 @@ Store rx(HandshakeAction _, Store newStore){
     if(!failure){
         log(1, "Handshake successful");
         tx(UPP_ACKNOWLEDGE);
-        newStore.state = State::DISPLAY_SENSORS_STATE;
+        newStore.state = State::RECEIVE_INITIAL_DATA_STATE;
     }else{
         log(0, "Unsuccessful Handshake. FailureLevel: ");
         log(0, failure);
@@ -137,11 +172,109 @@ Store rx(StartHandshakeAction _, Store newStore){
     return newStore;
 }
 
+Store rx(ReceiveListAction _, Store store){
+    auto failure = 0;
+    auto name     = SCmd.next();
+    auto lengthSt = SCmd.next();
+    auto length = atoi(lengthSt);
+
+    List list = List::NO_LIST;
+
+    failure += is_acknowledged(store);
+    failure += is_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
+
+
+
+    if(strlen(lengthSt) == 0 || length == 0){
+        log(0, "Length of list is unknown");
+        failure ++;
+    }
+
+    if(strcmp("SENSOR", name) == 0){
+        list = List::SENSOR_LIST;
+    }
+
+    if(list == List::NO_LIST){
+        log(0, "Unknown List");
+        failure ++;
+    }
+
+    if(failure){
+        tx(UPP_ERROR);
+        return store;
+    }
+
+
+    log(1, "Awaiting entries");
+    log(1, "name:");
+    log(1, name);
+    log(1, "Length:");
+    log(1, length);
+    log(1, "Change to State: RECEIVE_LIST_STATE");
+
+    store.sensors = new Sensor[length];
+    store.sensors_list_length = length;
+    store.received_from_list  = 0;
+    store.state   = State::RECEIVE_LIST_STATE;
+
+    tx(UPP_ACKNOWLEDGE);
+
+    return store;
+}
+
+
+Store rx(ReceiveListEntryAction _, Store store){
+    auto failure = 0;
+
+    auto name         = SCmd.next();
+    auto pictogramB64 = SCmd.next();
+    char * pictogram  = new char[256 / 8];
+
+    switch(store.state){
+        case State::RECEIVING_SENSOR_LIST_STATE:
+            break;
+        default:
+            log(0, "In wrong state to Receive List entry");
+            failure ++;
+            break;
+    }
+
+    if(strlen(pictogramB64) == 0){
+        log(0, "can't decode Entry");
+        failure++;
+    }else{
+        Base64.decode(pictogram, pictogramB64, strlen(pictogramB64));
+    }
+
+    if(failure){
+        tx(UPP_ERROR);
+        return store;
+    }
+
+    Sensor sensor;
+    sensor.name    = name;
+    sensor.graphic = pictogram;
+
+    store.sensors[++store.received_from_list] = sensor;
+
+    if(store.received_from_list >= store.sensors_list_length){
+        store.state = State::RECEIVE_INITIAL_DATA_STATE;
+    }
+
+    tx(UPP_ACKNOWLEDGE);
+
+    return store;
+}
+
+
 void setup(){
     Serial.begin(9600);
 
-    SCmd.addCommand(UPP_ACKNOWLEDGE  , [](){rx(AcknowledgeAction());});
-    SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction  ());});
+    SCmd.addCommand(UPP_ACKNOWLEDGE  , [](){rx(AcknowledgeAction     ());});
+    SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
+    SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
+    SCmd.addCommand(UPP_LIST         , [](){rx(ReceiveListAction     ());});
+    SCmd.addCommand(UPP_ENTRY        , [](){rx(ReceiveListEntryAction());});
 }
 
 void loop(){
@@ -150,9 +283,9 @@ void loop(){
         case State::STARTUP_STATE:
             rx(StartHandshakeAction());
             break;
-//        case State::DISPLAY_SENSORS_STATE:
-//            //dummy;
-//            break;
+//        case State::RECEIVE_INITIAL_DATA_STATE:
+//            dummy;
+            break;
 //        case State::RECEIVING_SENSOR_LIST_STATE:
 //            //dummy transmission indicator
 //            break;
