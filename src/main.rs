@@ -84,6 +84,7 @@ struct FilterNode {
 fn send_line(port: &mut serial::SerialPort, st: String){
     port.write(st.as_bytes());
     port.write(b"\r\n");
+    std::thread::sleep_ms(100);
 
     println!("Send: {:?}{:?}", st, "\r\n")
 }
@@ -157,6 +158,11 @@ fn send_acknowledge<T: serial::SerialPort>(port: &mut T) {
     send_line(port, "UPP-ACK".to_string());
 }
 
+fn clean_reading<T: serial::SerialPort>(port: &mut T) {
+    let mut t_buffer :Vec<u8> = Vec::new();
+    port.read(&mut t_buffer);
+}
+
 fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, name :String){
     let length :usize = values.len();
 
@@ -170,17 +176,21 @@ fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, na
         assert!(await_acknowledge(port).is_ok());
     }
 
-    send_line(port, "UPP-LIST-END".to_string());
+    send_line(port, "UPP-END".to_string());
     assert!(await_acknowledge(port).is_ok())
 }
 
 fn main() {
-
     let matches = process_arguments();
     let device  = matches.value_of("device").unwrap();
     println!("Open {:?}", device);
 
     let mut port = serial::open(device).unwrap();
+
+//    std::thread::sleep_ms(5000);
+
+    clean_reading(&mut port);
+
 
     let node :FilterNode = match pollHandshake(&mut port, 0, 10){
         Some(node) => node,
@@ -189,7 +199,7 @@ fn main() {
 
     send_acknowledge(&mut port);
 
-    std::thread::sleep_ms(50);
+
 
     println!("Send Handshake");
     send_line(&mut port, "UPP-HUB".to_string());
@@ -198,11 +208,15 @@ fn main() {
 
 
     let sensors :HashMap<String, Sensor> = load_sensors();
-    let sensor_iter                      = sensors.into_iter();
-    let sensor_lines :VecDeque<String>   = sensor_iter.map(|sensor :(String, Sensor)|
+    let sensor_lines :VecDeque<String>   = sensors.into_iter().map(
+        |sensor :(String, Sensor)|
         format!("UPP-ENTRY {} {}", sensor.0, sensor.1.pictogram)
     ).collect();
 
     sendList(&mut port, sensor_lines, "SENSOR".to_string());
 
+    send_line(&mut port, "UPP-READY".to_string());
+    assert!(await_acknowledge(&mut port).is_ok());
+
+    loop{std::thread::sleep_ms(1000);}
 }

@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <SerialCommand.h>
 #include <Base64.h>
+#include "TFT.h"
 
 SerialCommand SCmd;
 
@@ -40,11 +41,12 @@ enum State{
 #define UPP_ERROR            "UPP-ERR"
 #define UPP_HUB_HANDSHAKE    "UPP-HUB"
 #define UPP_FILTER_HANDSHAKE "UPP-FILTER"
+#define UPP_INIT_END         "UPP-READY"
 /**
  * UPP-LIST [name :String] [length :Number]
  */
 #define UPP_LIST             "UPP-LIST"
-#define UPP_LIST_END         "UPP-LIST-END"
+#define UPP_LIST_END         "UPP-END"
 /**
  * UPP-ENTRY [name :String] [pictogram :Base64]
  */
@@ -62,14 +64,15 @@ struct Sensor{
 };
 
 struct Store {
-    Store *  old_store       = 0;
+    Store *  old_store        = 0;
     int      __depth          = 0;
-    bool     dirty            = false;
+    bool     dirty            = true;
     bool     hub_acknowledged = false;
     State    state            = State::STARTUP_STATE;
     Sensor * sensors;
     int      sensors_list_length = 0;
     int      received_from_list  = 0;
+    int      selected_sensor     = 0;
 } __store;
 
 void debug_store(Store _store = __store){
@@ -79,7 +82,7 @@ void debug_store(Store _store = __store){
     log(2,_store.dirty);
     log(2,"hub_acknowledged:");
     log(2,_store.hub_acknowledged);
-    log(2,"state:           ");
+    log(2,"state           :");
     log(2,_store.state);
 
 
@@ -123,6 +126,7 @@ struct AcknowledgeAction      :Action {};
 struct HandshakeAction        :Action {};
 struct StartHandshakeAction   :Action {};
 struct EvaluateAction         :Action {};
+struct EndInitialStateAction  :Action {};
 struct ReceiveListAction      :Action {};
 struct ReceiveListEntryAction :Action {};
 struct ReceiveListEndAction   :Action {};
@@ -133,8 +137,52 @@ void tx(String message, bool awaiting_acknowledgement = false){
     Serial.println();
 }
 
+void generate_sensor_select_menu(char * textBuffer, int page, Store store){
+    int list_length = 3;
+    int len = sprintf(textBuffer, "Select Sensor\n[%s]%s\n[%s]%s\n[%s]%s\n",
+                      store.sensors_list_length > page * list_length + 0
+                      ? (store.selected_sensor == page * list_length + 0 ? "X" : " ")
+                      : "-",
+                      store.sensors_list_length > page * list_length + 0
+                      ? store.sensors[page * list_length + 0].name.c_str()
+                      : "-",
+                      store.sensors_list_length > page * list_length + 1
+                      ? (store.selected_sensor == page * list_length + 1 ? "X" : " ")
+                      : "-",
+                      store.sensors_list_length > page * list_length + 1
+                      ? store.sensors[page * list_length + 1].name.c_str()
+                      : "-",
+                      store.sensors_list_length > page * list_length + 2
+                      ? (store.selected_sensor == page * list_length + 2 ? "X" : " ")
+                      : "-",
+                      store.sensors_list_length > page * list_length + 2
+                      ? store.sensors[page * list_length + 2].name.c_str()
+                      : "-"
+    );
+
+    textBuffer[len] = 0;
+}
+
 Store rx(EvaluateAction _, Store store){
-    store.hub_acknowledged = false;
+    char textBuffer [120];
+    int  page        = 0;
+
+    log(2, "Display is dirty");
+    store.dirty = false;
+    switch (store.state){
+        case State::DISPLAY_SENSORS_STATE:
+
+
+            generate_sensor_select_menu(textBuffer, page, store);
+            writeToTFT(textBuffer, 2);
+
+            break;
+        default:
+            writeToTFT("Conecting", 3);
+            break;
+    }
+
+
     return store;
 }
 
@@ -212,7 +260,6 @@ Store rx(ReceiveListAction _, Store store){
         return store;
     }
 
-
     log(1, "Awaiting entries");
     log(1, "name:");
     log(1, name);
@@ -263,6 +310,14 @@ Store rx(ReceiveListEntryAction _, Store store){
     sensor.name    = name;
     sensor.graphic = pictogram;
 
+    log(1, "Awaiting entries");
+    log(1, "name:");
+    log(1, name);
+    log(1, "number:");
+    log(1, store.received_from_list);
+    log(1, "pictogram:");
+    log(1, pictogram);
+
     store.sensors[store.received_from_list] = sensor;
     store.received_from_list++;
 
@@ -279,7 +334,6 @@ Store rx(ReceiveListEntryAction _, Store store){
 
 Store rx(ReceiveListEndAction _, Store store) {
     auto failure = 0;
-    log(0, "In wrong state to Receive List end");
     switch(store.state){
         case State::RECEIVE_LIST_END_STATE:
             break;
@@ -290,16 +344,33 @@ Store rx(ReceiveListEndAction _, Store store) {
     }
 
     if(failure){
-        log(0, "In wrong state to Receive List end");
         tx(UPP_ERROR);
         return store;
     }
 
     log(1, "Change to State: RECEIVE_INITIAL_DATA_STATE");
     store.state = State::RECEIVE_INITIAL_DATA_STATE;
-
+    store.dirty = true;
     tx(UPP_ACKNOWLEDGE);
     return store;
+}
+
+Store rx(EndInitialStateAction _, Store store){
+    int failure = 0;
+    failure += is_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
+
+    if(failure){
+        tx(UPP_ERROR);
+        return store;
+    }
+
+    log(1, "Change to State: DISPLAY_SENSORS_STATE");
+    store.state = State::DISPLAY_SENSORS_STATE;
+    store.dirty = true;
+    tx(UPP_ACKNOWLEDGE);
+
+    return store;
+
 }
 
 
@@ -311,23 +382,31 @@ void setup(){
     SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
     SCmd.addCommand(UPP_LIST         , [](){rx(ReceiveListAction     ());});
     SCmd.addCommand(UPP_ENTRY        , [](){rx(ReceiveListEntryAction());});
-//    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
-    SCmd.setDefaultHandler([](const char * c){log(0,"Unknown Command");log(0, c);});
+    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
+    SCmd.addCommand(UPP_INIT_END     , [](){rx(EndInitialStateAction ());});
+    SCmd.setDefaultHandler([](const char * c){tx(UPP_ERROR);log(0,"Unknown Command");log(0, c);});
+
+    setupTFT();
 }
 
 void loop(){
 //    debug_store();
+    if(__store.dirty){
+        rx(EvaluateAction());
+    }
     switch (__store.state){
         case State::STARTUP_STATE:
             rx(StartHandshakeAction());
             break;
-//        case State::RECEIVE_INITIAL_DATA_STATE:
-//            dummy;
+        case State::DISPLAY_SENSORS_STATE:
             break;
 //        case State::RECEIVING_SENSOR_LIST_STATE:
 //            //dummy transmission indicator
 //            break;
     }
+
+
+
     delay(50);
     SCmd.readSerial();
 }
