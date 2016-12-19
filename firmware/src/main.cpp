@@ -11,7 +11,7 @@ SerialCommand SCmd;
 #define notImplemented Serial.print("function not implemented"); return;
 
 int _logI = 0;
-#define _logLevel 1
+#define _logLevel 0
 template<typename T>
 void log(int level, T msg){ //TODO:rewrite to macro
     if(level > _logLevel) return;
@@ -31,6 +31,7 @@ enum State{
     DISPLAY_SENSORS_STATE,
     RECEIVE_INITIAL_DATA_STATE,
     RECEIVE_LIST_STATE,
+    RECEIVE_LIST_END_STATE,
     LENGTH_OF_STATES
 };
 
@@ -39,7 +40,14 @@ enum State{
 #define UPP_ERROR            "UPP-ERR"
 #define UPP_HUB_HANDSHAKE    "UPP-HUB"
 #define UPP_FILTER_HANDSHAKE "UPP-FILTER"
+/**
+ * UPP-LIST [name :String] [length :Number]
+ */
 #define UPP_LIST             "UPP-LIST"
+#define UPP_LIST_END         "UPP-LIST-END"
+/**
+ * UPP-ENTRY [name :String] [pictogram :Base64]
+ */
 #define UPP_ENTRY            "UPP-ENTRY"
 
 enum List{
@@ -54,7 +62,7 @@ struct Sensor{
 };
 
 struct Store {
-    Store * old_store       = 0;
+    Store *  old_store       = 0;
     int      __depth          = 0;
     bool     dirty            = false;
     bool     hub_acknowledged = false;
@@ -85,15 +93,6 @@ void debug_store(Store _store = __store){
 
 struct Action{ };
 
-struct NoAction               :Action {};
-struct AcknowledgeAction      :Action {};
-struct HandshakeAction        :Action {};
-struct StartHandshakeAction   :Action {};
-struct EvaluateAction         :Action {};
-struct ReceiveListAction      :Action {};
-struct ReceiveListEntryAction :Action {};
-
-
 int is_acknowledged(const Store &store) {
     if(!store.hub_acknowledged){
         log(0,"Hub is not acknowledged");
@@ -118,6 +117,15 @@ void rx(T action){
     Store newStore = rx(action, store);
     __store = newStore;
 }
+
+struct NoAction               :Action {};
+struct AcknowledgeAction      :Action {};
+struct HandshakeAction        :Action {};
+struct StartHandshakeAction   :Action {};
+struct EvaluateAction         :Action {};
+struct ReceiveListAction      :Action {};
+struct ReceiveListEntryAction :Action {};
+struct ReceiveListEndAction   :Action {};
 
 void tx(String message, bool awaiting_acknowledgement = false){
     if(awaiting_acknowledgement)rx(EvaluateAction());
@@ -258,11 +266,34 @@ Store rx(ReceiveListEntryAction _, Store store){
     store.sensors[++store.received_from_list] = sensor;
 
     if(store.received_from_list >= store.sensors_list_length){
-        store.state = State::RECEIVE_INITIAL_DATA_STATE;
+        store.state = State::RECEIVE_LIST_END_STATE;
     }
 
     tx(UPP_ACKNOWLEDGE);
 
+    return store;
+}
+
+
+Store rx(ReceiveListEndAction _, Store store) {
+    auto failure = 0;
+    switch(store.state){
+        case State::RECEIVE_LIST_END_STATE:
+            break;
+        default:
+            log(0, "In wrong state to Receive List end");
+            failure ++;
+            break;
+    }
+
+    if(failure){
+        tx(UPP_ERROR);
+        return store;
+    }
+
+    store.state = State::RECEIVE_INITIAL_DATA_STATE;
+
+    tx(UPP_ACKNOWLEDGE);
     return store;
 }
 
@@ -275,6 +306,7 @@ void setup(){
     SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
     SCmd.addCommand(UPP_LIST         , [](){rx(ReceiveListAction     ());});
     SCmd.addCommand(UPP_ENTRY        , [](){rx(ReceiveListEntryAction());});
+    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
 }
 
 void loop(){

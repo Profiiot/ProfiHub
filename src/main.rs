@@ -4,11 +4,13 @@
 extern crate clap;
 extern crate serial;
 extern crate regex;
+extern crate base64;
 
 use std::io;
 use std::time::Duration;
 use regex::Regex;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use clap::{Arg, App};
 
@@ -24,19 +26,19 @@ fn load_upp_commands() -> HashMap<String, Regex>{
 
 struct Sensor{
     name :String,
-    pictogram :[u16; 16]
+    pictogram :String
 }
 
 fn load_sensors() -> HashMap<String, Sensor>{
     let mut sensors :HashMap<String, Sensor> = HashMap::new();
     let potentiometer = Sensor{
         name: "potentiometer".to_string(),
-        pictogram: [0; 16]
+        pictogram: "".to_string()
     };
 
     let light_sensor = Sensor{
         name: "light".to_string(),
-        pictogram: [0; 16]
+        pictogram: "".to_string()
     };
 
     sensors.insert(potentiometer.name.clone(), potentiometer);
@@ -155,6 +157,22 @@ fn send_acknowledge<T: serial::SerialPort>(port: &mut T){
     send_line(port, "UPP-ACK".to_string());
 }
 
+fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, name :String){
+    let length :usize = values.len();
+
+    send_line(port, format!("UPP-LIST {} {}", name, length).to_string());
+    assert!(await_acknowledge(port).is_ok());
+
+
+    for value in values {
+
+        send_line(port, value);
+        assert!(await_acknowledge(port).is_ok());
+    }
+
+    send_line(port, "UPP-LIST-END".to_string());
+    assert!(await_acknowledge(port).is_ok());
+}
 
 fn main() {
 
@@ -180,8 +198,11 @@ fn main() {
 
 
     let sensors :HashMap<String, Sensor> = load_sensors();
-    send_line(&mut port, "UPP-LIST SENSOR 2".to_string());
-    assert!(await_acknowledge(&mut port).is_ok());
+    let sensor_iter                      = sensors.into_iter();
+    let sensor_lines :VecDeque<String>   = sensor_iter.map(|sensor :(String, Sensor)|
+        format!("UPP-ENTRY {} {}", sensor.0, sensor.1.pictogram)
+    ).collect();
 
+    sendList(&mut port, sensor_lines, "SENSOR".to_string());
 
 }
