@@ -33,12 +33,12 @@ fn load_sensors() -> HashMap<String, Sensor>{
     let mut sensors :HashMap<String, Sensor> = HashMap::new();
     let potentiometer = Sensor{
         name: "potentiometer".to_string(),
-        pictogram: "".to_string()
+        pictogram: "HIJKL".to_string()
     };
 
     let light_sensor = Sensor{
         name: "light".to_string(),
-        pictogram: "".to_string()
+        pictogram: "ABCDEF".to_string()
     };
 
     sensors.insert(potentiometer.name.clone(), potentiometer);
@@ -152,7 +152,7 @@ fn pollHandshake<T: serial::SerialPort>(port: &mut T, trial :i32, trials: i32) -
     }
 }
 
-fn send_acknowledge<T: serial::SerialPort>(port: &mut T){
+fn send_acknowledge<T: serial::SerialPort>(port: &mut T) {
     println!("Send Acknowledge");
     send_line(port, "UPP-ACK".to_string());
 }
@@ -171,7 +171,7 @@ fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, na
     }
 
     send_line(port, "UPP-LIST-END".to_string());
-    assert!(await_acknowledge(port).is_ok());
+    assert!(await_acknowledge(port).is_ok())
 }
 
 fn main() {

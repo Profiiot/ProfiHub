@@ -239,7 +239,7 @@ Store rx(ReceiveListEntryAction _, Store store){
     char * pictogram  = new char[256 / 8];
 
     switch(store.state){
-        case State::RECEIVING_SENSOR_LIST_STATE:
+        case State::RECEIVE_LIST_STATE:
             break;
         default:
             log(0, "In wrong state to Receive List entry");
@@ -263,9 +263,11 @@ Store rx(ReceiveListEntryAction _, Store store){
     sensor.name    = name;
     sensor.graphic = pictogram;
 
-    store.sensors[++store.received_from_list] = sensor;
+    store.sensors[store.received_from_list] = sensor;
+    store.received_from_list++;
 
     if(store.received_from_list >= store.sensors_list_length){
+        log(1, "Change to State: RECEIVE_LIST_END_STATE");
         store.state = State::RECEIVE_LIST_END_STATE;
     }
 
@@ -277,6 +279,7 @@ Store rx(ReceiveListEntryAction _, Store store){
 
 Store rx(ReceiveListEndAction _, Store store) {
     auto failure = 0;
+    log(0, "In wrong state to Receive List end");
     switch(store.state){
         case State::RECEIVE_LIST_END_STATE:
             break;
@@ -287,10 +290,12 @@ Store rx(ReceiveListEndAction _, Store store) {
     }
 
     if(failure){
+        log(0, "In wrong state to Receive List end");
         tx(UPP_ERROR);
         return store;
     }
 
+    log(1, "Change to State: RECEIVE_INITIAL_DATA_STATE");
     store.state = State::RECEIVE_INITIAL_DATA_STATE;
 
     tx(UPP_ACKNOWLEDGE);
@@ -306,7 +311,8 @@ void setup(){
     SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
     SCmd.addCommand(UPP_LIST         , [](){rx(ReceiveListAction     ());});
     SCmd.addCommand(UPP_ENTRY        , [](){rx(ReceiveListEntryAction());});
-    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
+//    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
+    SCmd.setDefaultHandler([](const char * c){log(0,"Unknown Command");log(0, c);});
 }
 
 void loop(){
