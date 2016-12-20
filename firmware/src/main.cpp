@@ -6,13 +6,36 @@
 #include <SerialCommand.h>
 #include <Base64.h>
 #include "TFT.h"
+#include <Button.h>
 
-SerialCommand SCmd;
+
 
 #define notImplemented Serial.print("function not implemented"); return;
 
+#define UPP_ACKNOWLEDGE      "UPP-ACK"
+#define UPP_ERROR            "UPP-ERR"
+#define UPP_HUB_HANDSHAKE    "UPP-HUB"
+#define UPP_FILTER_HANDSHAKE "UPP-FILTER"
+#define UPP_INIT_END         "UPP-READY"
+/**
+ * UPP-LIST [name :String] [length :Number]
+ */
+#define UPP_LIST             "UPP-LIST"
+#define UPP_LIST_END         "UPP-END"
+/**
+ * UPP-ENTRY [name :String] [pictogram :Base64]
+ */
+#define UPP_ENTRY            "UPP-ENTRY"
+#define UPP_SELECT_SENSOR    "UPP-SELECT"
+
+#define KNOB_PIN       A0
+#define KNOB_THRESHOLD 10
+#define BUTTON_PIN      2
+
 int _logI = 0;
 #define _logLevel 0
+
+
 template<typename T>
 void log(int level, T msg){ //TODO:rewrite to macro
     if(level > _logLevel) return;
@@ -37,20 +60,11 @@ enum State{
 };
 
 
-#define UPP_ACKNOWLEDGE      "UPP-ACK"
-#define UPP_ERROR            "UPP-ERR"
-#define UPP_HUB_HANDSHAKE    "UPP-HUB"
-#define UPP_FILTER_HANDSHAKE "UPP-FILTER"
-#define UPP_INIT_END         "UPP-READY"
-/**
- * UPP-LIST [name :String] [length :Number]
- */
-#define UPP_LIST             "UPP-LIST"
-#define UPP_LIST_END         "UPP-END"
-/**
- * UPP-ENTRY [name :String] [pictogram :Base64]
- */
-#define UPP_ENTRY            "UPP-ENTRY"
+
+
+
+SerialCommand SCmd;
+Button button(BUTTON_PIN, true, true, 20);
 
 enum List{
     NO_LIST,
@@ -59,6 +73,7 @@ enum List{
 };
 
 struct Sensor{
+    int      id;
     String   name;
     char   * graphic;
 };
@@ -70,9 +85,13 @@ struct Store {
     bool     hub_acknowledged = false;
     State    state            = State::STARTUP_STATE;
     Sensor * sensors;
-    int      sensors_list_length = 0;
-    int      received_from_list  = 0;
-    int      selected_sensor     = 0;
+    int      sensors_list_length    = 0;
+    int      received_from_list     = 0;
+    int      selected_sensor        = 0;
+    int      knobValue              = 0;
+    bool     knobValueUnconsumed    = false;
+    bool     buttonPressed          = false;
+    bool     buttonChangeUnconsumed = false;
 } __store;
 
 void debug_store(Store _store = __store){
@@ -130,6 +149,11 @@ struct EndInitialStateAction  :Action {};
 struct ReceiveListAction      :Action {};
 struct ReceiveListEntryAction :Action {};
 struct ReceiveListEndAction   :Action {};
+struct PollInterface          :Action {};
+struct SelectSensorAction     :Action {};
+struct RequestSensorData      :Action {};
+
+void setupUpp();
 
 void tx(String message, bool awaiting_acknowledgement = false){
     if(awaiting_acknowledgement)rx(EvaluateAction());
@@ -139,25 +163,29 @@ void tx(String message, bool awaiting_acknowledgement = false){
 
 void generate_sensor_select_menu(char * textBuffer, int page, Store store){
     int list_length = 3;
-    int len = sprintf(textBuffer, "Select Sensor\n[%s]%s\n[%s]%s\n[%s]%s\n",
-                      store.sensors_list_length > page * list_length + 0
-                      ? (store.selected_sensor == page * list_length + 0 ? "X" : " ")
-                      : "-",
-                      store.sensors_list_length > page * list_length + 0
-                      ? store.sensors[page * list_length + 0].name.c_str()
-                      : "-",
-                      store.sensors_list_length > page * list_length + 1
-                      ? (store.selected_sensor == page * list_length + 1 ? "X" : " ")
-                      : "-",
-                      store.sensors_list_length > page * list_length + 1
-                      ? store.sensors[page * list_length + 1].name.c_str()
-                      : "-",
-                      store.sensors_list_length > page * list_length + 2
-                      ? (store.selected_sensor == page * list_length + 2 ? "X" : " ")
-                      : "-",
-                      store.sensors_list_length > page * list_length + 2
-                      ? store.sensors[page * list_length + 2].name.c_str()
-                      : "-"
+    int selected_sensor = store.selected_sensor;
+    int page_begin = page * list_length;
+    int len = sprintf(textBuffer, "Select Sensor\n[%s]%s\n[%s]%s\n[%s]%s\n\n%d%d",
+          store.sensors_list_length > page_begin + 0
+          ? (selected_sensor == page_begin + 0 ? "X" : " ")
+          : "-",
+          store.sensors_list_length > page_begin + 0
+          ? store.sensors[page_begin + 0].name.c_str()
+          : "-",
+          store.sensors_list_length > page_begin + 1
+          ? (selected_sensor == page_begin + 1 ? "X" : " ")
+          : "-",
+          store.sensors_list_length > page_begin + 1
+          ? store.sensors[page_begin + 1].name.c_str()
+          : "-",
+          store.sensors_list_length > page_begin + 2
+          ? (selected_sensor == page_begin + 2 ? "X" : " ")
+          : "-",
+          store.sensors_list_length > page_begin + 2
+          ? store.sensors[page_begin + 2].name.c_str()
+          : "-",
+          selected_sensor,
+          store.buttonPressed
     );
 
     textBuffer[len] = 0;
@@ -281,9 +309,11 @@ Store rx(ReceiveListAction _, Store store){
 Store rx(ReceiveListEntryAction _, Store store){
     auto failure = 0;
 
+    auto idString     = SCmd.next();
     auto name         = SCmd.next();
     auto pictogramB64 = SCmd.next();
-    char * pictogram  = new char[256 / 8];
+    auto * pictogram  = new char[256 / 8];
+    auto id           = atoi(idString);
 
     switch(store.state){
         case State::RECEIVE_LIST_STATE:
@@ -307,6 +337,7 @@ Store rx(ReceiveListEntryAction _, Store store){
     }
 
     Sensor sensor;
+    sensor.id      = id;
     sensor.name    = name;
     sensor.graphic = pictogram;
 
@@ -373,8 +404,61 @@ Store rx(EndInitialStateAction _, Store store){
 
 }
 
+Store rx(PollInterface _, Store store){
+    button.read();
+    int knobValue = analogRead(KNOB_PIN);
+    if(abs(knobValue - store.knobValue) > KNOB_THRESHOLD){
+        store.knobValue           = knobValue;
+        store.knobValueUnconsumed = true;
+    }
 
-void setup(){
+    if(button.wasReleased()){
+        store.buttonPressed          = true;
+        store.buttonChangeUnconsumed = true;
+        store.dirty                  = true;
+    }
+
+    return store;
+}
+
+Store rx(SelectSensorAction _, Store store){
+    auto selected_sensor = map(
+            store.knobValue,
+            0, 1024,                      //from
+            0, store.sensors_list_length  //to
+    );
+    if(store.selected_sensor != selected_sensor)
+        store.dirty = true;
+
+    store.selected_sensor     = selected_sensor;
+    store.knobValueUnconsumed = false;
+
+    return store;
+}
+
+Store rx(RequestSensorData _, Store store){
+    char buffer[50];
+    auto sensor = store.sensors[store.selected_sensor];
+    auto id     = sensor.id;
+
+    if(!store.buttonPressed)
+        return store;
+
+    sprintf(buffer, "%s %d", UPP_SELECT_SENSOR, id);
+    tx(buffer);
+
+    store.buttonChangeUnconsumed = false;
+    
+    
+    return store;
+}
+
+void inline setupInterface(){
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    setupTFT();
+}
+
+void setupUpp() {
     Serial.begin(9600);
 
     SCmd.addCommand(UPP_ACKNOWLEDGE  , [](){rx(AcknowledgeAction     ());});
@@ -385,12 +469,18 @@ void setup(){
     SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
     SCmd.addCommand(UPP_INIT_END     , [](){rx(EndInitialStateAction ());});
     SCmd.setDefaultHandler([](const char * c){tx(UPP_ERROR);log(0,"Unknown Command");log(0, c);});
-
-    setupTFT();
 }
+
+void setup(){
+    setupUpp();
+    setupInterface();
+}
+
+
 
 void loop(){
 //    debug_store();
+    rx(PollInterface());
     if(__store.dirty){
         rx(EvaluateAction());
     }
@@ -399,13 +489,15 @@ void loop(){
             rx(StartHandshakeAction());
             break;
         case State::DISPLAY_SENSORS_STATE:
+            if(__store.knobValueUnconsumed)
+                rx(SelectSensorAction());
+            if(__store.buttonChangeUnconsumed)
+                rx(RequestSensorData());
             break;
 //        case State::RECEIVING_SENSOR_LIST_STATE:
 //            //dummy transmission indicator
 //            break;
     }
-
-
 
     delay(50);
     SCmd.readSerial();

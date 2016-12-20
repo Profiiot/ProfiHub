@@ -9,6 +9,8 @@ extern crate base64;
 use std::io;
 use std::time::Duration;
 use regex::Regex;
+use regex::Captures;
+use regex::CaptureNames;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
@@ -21,23 +23,36 @@ fn load_upp_commands() -> HashMap<String, Regex>{
         Regex::new(r"^UPP-FILTER v(?P<version>[:digit:]{3}) (?P<name>[:alphanum:]*)").unwrap()
     );
 
+    commands.insert(
+        "UPP-SELECT".to_string(),
+        Regex::new(r"^UPP-SELECT (?P<sensor_id>[:digit:]*)").unwrap()
+    );
+
+    commands.insert(
+        "UPP-ACK".to_string(),
+        Regex::new(r"^UPP-ACK (?P<state>.*)").unwrap()
+    );
+
     commands
 }
 
 struct Sensor{
-    name :String,
-    pictogram :String
+    id        :i32,
+    name      :String,
+    pictogram :String,
 }
 
 fn load_sensors() -> HashMap<String, Sensor>{
     let mut sensors :HashMap<String, Sensor> = HashMap::new();
     let potentiometer = Sensor{
-        name: "potentiometer".to_string(),
+        id:        1,
+        name:      "potentiometer".to_string(),
         pictogram: "HIJKL".to_string()
     };
 
     let light_sensor = Sensor{
-        name: "light".to_string(),
+        id:        2,
+        name:      "light".to_string(),
         pictogram: "ABCDEF".to_string()
     };
 
@@ -99,6 +114,31 @@ fn await_line<T: serial::SerialPort>(port: &mut T, st: String) -> Result<(), &st
     if line.eq(&search_line) {Ok(())} else {Err("No reply")}
 }
 
+fn await_command<T: serial::SerialPort, >(port: &mut T, match_expression: Regex) -> Option<HashMap<String, String>> {
+    let line :String = match read_line(port) {
+        Some(v) => v,
+              _ => return None,
+    };
+    ;
+    let mut values   :HashMap<String, String> = HashMap::new();
+    let     captures :Captures = match match_expression.captures(line.as_str()){
+        Some(v) => v,
+              _ => {return None}
+    };
+
+
+    for capture in captures.iter_named() {
+        let name  :String = capture.0.to_string();
+        let value :String = match capture.1 {
+            Some(v) => v.to_string(),
+                  _ => "".to_string()
+        };
+        values.insert(name, value);
+    }
+
+    Some(values)
+}
+
 fn await_acknowledge<T: serial::SerialPort>(port: &mut T) -> Result<(), &str>{
     await_line(port, "UPP-ACK".to_string())
 //        {
@@ -119,9 +159,6 @@ fn handshake<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
         "UPP-FILTER\r\n" => Ok(FilterNode{name: "hallo".to_string()}),
                        _ => Err("Unknown Device")
     }?;
-
-
-
 
     Ok(node)
 
@@ -181,8 +218,9 @@ fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, na
 }
 
 fn main() {
-    let matches = process_arguments();
-    let device  = matches.value_of("device").unwrap();
+    let commands :HashMap<String, Regex> = load_upp_commands();
+    let matches  = process_arguments();
+    let device   = matches.value_of("device").unwrap();
     println!("Open {:?}", device);
 
     let mut port = serial::open(device).unwrap();
@@ -207,10 +245,10 @@ fn main() {
     println!("Wait for Acknowledge");
 
 
-    let sensors :HashMap<String, Sensor> = load_sensors();
-    let sensor_lines :VecDeque<String>   = sensors.into_iter().map(
+    let sensors      :HashMap<String, Sensor> = load_sensors();
+    let sensor_lines :VecDeque<String>        = sensors.into_iter().map(
         |sensor :(String, Sensor)|
-        format!("UPP-ENTRY {} {}", sensor.0, sensor.1.pictogram)
+        format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
     ).collect();
 
     sendList(&mut port, sensor_lines, "SENSOR".to_string());
@@ -218,5 +256,17 @@ fn main() {
     send_line(&mut port, "UPP-READY".to_string());
     assert!(await_acknowledge(&mut port).is_ok());
 
-    loop{std::thread::sleep_ms(1000);}
+    await_command(&mut port, commands.get("UPP-ACK").unwrap().clone());
+
+    let sensor_id :String = match await_command(&mut port, commands.get("UPP-SELECT").unwrap().clone()) {
+        Some(v) => v.get("sensor_id").unwrap().clone(),
+              _ => return,
+    };
+
+    let sensor = match sensors.into_iter().find(| &_sensor | _sensor.1.id.to_string() == sensor_id){
+        Some(v) => v.0,
+              _ => return,
+    };
+
+    println!("{:?}", sensor);
 }
