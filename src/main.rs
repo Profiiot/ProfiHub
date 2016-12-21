@@ -13,6 +13,7 @@ use regex::Captures;
 use regex::CaptureNames;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map::Iter;
 
 use clap::{Arg, App};
 
@@ -246,10 +247,12 @@ fn main() {
 
 
     let sensors      :HashMap<String, Sensor> = load_sensors();
-    let sensor_lines :VecDeque<String>        = sensors.into_iter().map(
-        |sensor :(String, Sensor)|
+
+    let sensor_lines :VecDeque<String> = sensors.iter().map(
+        |sensor :(&String, &Sensor)|
         format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
     ).collect();
+
 
     sendList(&mut port, sensor_lines, "SENSOR".to_string());
 
@@ -263,10 +266,10 @@ fn main() {
               _ => return,
     };
 
-    let sensor = match sensors.into_iter().find(| &_sensor | _sensor.1.id.to_string() == sensor_id){
-        Some(v) => v.0,
+    let sensor :&Sensor = match sensors.iter().find(|&_sensor | _sensor.1.id.to_string() == sensor_id){
+        Some(v) => v.1.clone(),
               _ => return,
     };
 
-    println!("{:?}", sensor);
+    println!("{:?}", sensor.name);
 }
