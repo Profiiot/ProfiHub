@@ -8,24 +8,11 @@
 #include "TFT.h"
 #include <Button.h>
 #include "sensorsLib/sensorDispatch.h"
+#include "uppStrings.h"
 
 #define notImplemented Serial.print("function not implemented"); return;
 
-#define UPP_ACKNOWLEDGE      "UPP-ACK"
-#define UPP_ERROR            "UPP-ERR"
-#define UPP_HUB_HANDSHAKE    "UPP-HUB"
-#define UPP_FILTER_HANDSHAKE "UPP-FILTER"
-#define UPP_INIT_END         "UPP-READY"
-/**
- * UPP-LIST [name :String] [length :Number]
- */
-#define UPP_LIST             "UPP-LIST"
-#define UPP_LIST_END         "UPP-END"
-/**
- * UPP-ENTRY [name :String] [pictogram :Base64]
- */
-#define UPP_ENTRY            "UPP-ENTRY"
-#define UPP_SELECT_SENSOR    "UPP-SELECT"
+
 
 #define KNOB_PIN       A0
 #define KNOB_THRESHOLD 10
@@ -34,6 +21,8 @@
 int _logI = 0;
 #define _logLevel 0
 
+
+#define UPP_INSTALL_IO_DRIVER "UPP-INSTALL"
 
 template<typename T>
 void log(int level, T msg){ //TODO:rewrite to macro
@@ -57,6 +46,7 @@ enum State{
     RECEIVE_LIST_END_STATE,
     INITIALISE_IO_STATE,
     IO_STATE,
+    WAIT_FOR_DRIVER_STATE,
     LENGTH_OF_STATES
 };
 
@@ -120,7 +110,7 @@ int is_acknowledged(const Store &store) {
     return 0;
 }
 
-int is_right_state(const Store &store, State state) {
+int is_not_right_state(const Store &store, State state) {
     if(store.state != state){
         log(0, "Currently in the wrong state");
         return 1;
@@ -151,14 +141,9 @@ struct SelectSensorAction     :Action {};
 struct RequestSensorData      :Action {};
 struct InitIOAction           :Action {};
 struct IOAction               :Action {};
+struct WaitForDriverAction    :Action {};
 
 void setupUpp();
-
-void tx(String message, bool awaiting_acknowledgement = false){
-    if(awaiting_acknowledgement)rx(EvaluateAction());
-    Serial.print(message);
-    Serial.println();
-}
 
 void generate_sensor_select_menu(char * textBuffer, int page, Store store){
     int list_length = 3;
@@ -199,10 +184,12 @@ Store rx(EvaluateAction _, Store store){
     switch (store.state){
         case State::DISPLAY_SENSORS_STATE:
 
-
             generate_sensor_select_menu(textBuffer, page, store);
             writeToTFT(textBuffer, 2);
 
+            break;
+        case State::WAIT_FOR_DRIVER_STATE:
+            writeToTFT("Updating", 3);
             break;
         default:
             writeToTFT("Conecting", 3);
@@ -264,7 +251,7 @@ Store rx(ReceiveListAction _, Store store){
     List list = List::NO_LIST;
 
     failure += is_acknowledged(store);
-    failure += is_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
+    failure += is_not_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
 
 
 
@@ -387,7 +374,7 @@ Store rx(ReceiveListEndAction _, Store store) {
 
 Store rx(EndInitialStateAction _, Store store){
     int failure = 0;
-    failure += is_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
+    failure += is_not_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
 
     if(failure){
         tx(UPP_ERROR);
@@ -454,6 +441,12 @@ Store rx(RequestSensorData _, Store store){
 }
 
 Store rx(InitIOAction _, Store store){
+    int failure = 0;
+    failure += is_not_right_state(store, State::RECEIVE_INITIAL_DATA_STATE);
+    if(failure){
+        return store;
+    }
+
     sensor_lib::setup();
     store.state = IO_STATE;
     return store;
@@ -461,6 +454,13 @@ Store rx(InitIOAction _, Store store){
 
 Store rx(IOAction _, Store store){
     sensor_lib::loop();
+    return store;
+}
+
+Store rx(WaitForDriverAction _, Store store){
+    store.state = State::WAIT_FOR_DRIVER_STATE;
+    store.dirty = true;
+    tx(UPP_ACKNOWLEDGE);
     return store;
 }
 
@@ -472,14 +472,15 @@ void inline setupInterface(){
 void setupUpp() {
     Serial.begin(9600);
 
-    SCmd.addCommand(UPP_ACKNOWLEDGE  , [](){rx(AcknowledgeAction     ());});
-    SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
-    SCmd.addCommand(UPP_HUB_HANDSHAKE, [](){rx(HandshakeAction       ());});
-    SCmd.addCommand(UPP_LIST         , [](){rx(ReceiveListAction     ());});
-    SCmd.addCommand(UPP_ENTRY        , [](){rx(ReceiveListEntryAction());});
-    SCmd.addCommand(UPP_LIST_END     , [](){rx(ReceiveListEndAction  ());});
-    SCmd.addCommand(UPP_INIT_END     , [](){rx(EndInitialStateAction ());});
-    SCmd.setDefaultHandler([](const char * c){tx(UPP_ERROR);log(0,"Unknown Command");log(0, c);});
+    SCmd.addCommand(UPP_ACKNOWLEDGE      , [](){rx(AcknowledgeAction     ());});
+    SCmd.addCommand(UPP_HUB_HANDSHAKE    , [](){rx(HandshakeAction       ());});
+    SCmd.addCommand(UPP_START_IO         , [](){rx(InitIOAction          ());});
+    SCmd.addCommand(UPP_INSTALL_IO_DRIVER, [](){rx(WaitForDriverAction   ());});
+    SCmd.addCommand(UPP_LIST             , [](){rx(ReceiveListAction     ());});
+    SCmd.addCommand(UPP_ENTRY            , [](){rx(ReceiveListEntryAction());});
+    SCmd.addCommand(UPP_LIST_END         , [](){rx(ReceiveListEndAction  ());});
+    SCmd.addCommand(UPP_INIT_END         , [](){rx(EndInitialStateAction ());});
+    SCmd.setDefaultHandler([](const char * c){ tx(UPP_ERROR, "Unknown Command");log(0, "Unknown Command");log(0, c);});
 }
 
 void setup(){

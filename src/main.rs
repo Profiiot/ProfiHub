@@ -148,7 +148,7 @@ fn await_acknowledge<T: serial::SerialPort>(port: &mut T) -> Result<(), &str>{
 //    }
 }
 
-fn handshake<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
+fn await_filter<T: serial::SerialPort> (port: &mut T) -> Result<FilterNode, &str>{
     let node  :FilterNode;
 
     let line :String = match read_line(port) {
@@ -184,7 +184,7 @@ fn process_arguments<'T>() -> clap::ArgMatches<'T>{
 
 fn pollHandshake<T: serial::SerialPort>(port: &mut T, trial :i32, trials: i32) -> Option<FilterNode>{
     println!("Try to read Handshake: trial {:?} of {:?}", trial, trials);
-    match handshake(port){
+    match await_filter(port){
         Ok(node) => Some(node),
         Err(_)   => {
             if trial < trials {
@@ -221,28 +221,34 @@ fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, na
     assert!(await_acknowledge(port).is_ok())
 }
 
-fn handshake_and_select_sensor<'a>(device :&str, sensors: &'a HashMap<String, Sensor>) -> Option<& 'a Sensor>{
-    let commands :HashMap<String, Regex> = load_upp_commands();
-    let mut port = serial::open(device).unwrap();
+fn handshake<T: serial::SerialPort>(device :&str, port: &mut T) -> Option<FilterNode>{
+
     //    std::thread::sleep_ms(5000);
 
-    clean_reading(&mut port);
+    clean_reading(port);
 
 
-    let node: FilterNode = match pollHandshake(&mut port, 0, 10) {
+    let node: FilterNode = match pollHandshake(port, 0, 10) {
         Some(node) => node,
         None => return None
     };
 
-    send_acknowledge(&mut port);
+    send_acknowledge(port);
 
 
     println!("Send Handshake");
-    send_line(&mut port, "UPP-HUB".to_string());
+    send_line(port, "UPP-HUB".to_string());
 
     println!("Wait for Acknowledge");
 
+    Some(node)
+}
 
+fn handshake_and_select_sensor<'a>(device :&str, sensors: &'a HashMap<String, Sensor>) -> Option<& 'a Sensor>{
+    let commands :HashMap<String, Regex> = load_upp_commands();
+    let mut port = serial::open(device).unwrap();
+
+    let node = handshake(device, &mut port);
 
     let sensor_lines: VecDeque<String> = sensors.iter().map(
         |sensor: (&String, &Sensor)|
@@ -267,6 +273,9 @@ fn handshake_and_select_sensor<'a>(device :&str, sensors: &'a HashMap<String, Se
         _       => return None,
     };
 
+    send_line(&mut port, "UPP-INSTALL".to_string());
+    await_acknowledge(&mut port);
+
     println!("{:?}", sensor.name);
     Some(sensor)
 }
@@ -284,6 +293,7 @@ fn main() {
     let sed          = "/usr/bin/sed";
     let replace      = format!("###_LIB_PATH_###/{}\\/{}.ino", sensor.name, sensor.name);
     let firmware_src = "firmware/src/sensorsLib/";
+    let platformio   = "/usr/local/bin/platformio";
 
 
     let sed_output = std::process::Command::new("sh")
@@ -296,9 +306,20 @@ fn main() {
 
     let pio_output = std::process::Command::new("sh")
         .arg("-c")
-        .arg("/usr/local/bin/platformio run -d firmware --upload-port /dev/cu.usbmodem1411 -t upload")
+        .arg(format!("{} run -d firmware --upload-port /dev/cu.usbmodem1411 -t upload", platformio))
         .status()
         .expect("didn't start");
     println!("Programmed: {:?}", pio_output);
-//    println!("Programmed");
+
+    {
+        let commands :HashMap<String, Regex> = load_upp_commands();
+        let mut port = serial::open(device).unwrap();
+        let node = handshake(device, &mut port);
+
+        send_line(&mut port, "UPP-START".to_string());
+        assert!(await_acknowledge(&mut port).is_ok());
+        loop{
+            println!("{:?}",await_line(&mut port, "UPP".to_string()));
+        }
+    }
 }
