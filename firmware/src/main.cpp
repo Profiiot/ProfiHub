@@ -7,8 +7,7 @@
 #include <Base64.h>
 #include "TFT.h"
 #include <Button.h>
-
-
+#include "sensorsLib/sensorDispatch.h"
 
 #define notImplemented Serial.print("function not implemented"); return;
 
@@ -56,12 +55,10 @@ enum State{
     RECEIVE_INITIAL_DATA_STATE,
     RECEIVE_LIST_STATE,
     RECEIVE_LIST_END_STATE,
+    INITIALISE_IO_STATE,
+    IO_STATE,
     LENGTH_OF_STATES
 };
-
-
-
-
 
 SerialCommand SCmd;
 Button button(BUTTON_PIN, true, true, 20);
@@ -152,6 +149,8 @@ struct ReceiveListEndAction   :Action {};
 struct PollInterface          :Action {};
 struct SelectSensorAction     :Action {};
 struct RequestSensorData      :Action {};
+struct InitIOAction           :Action {};
+struct IOAction               :Action {};
 
 void setupUpp();
 
@@ -436,6 +435,7 @@ Store rx(SelectSensorAction _, Store store){
     return store;
 }
 
+
 Store rx(RequestSensorData _, Store store){
     char buffer[50];
     auto sensor = store.sensors[store.selected_sensor];
@@ -450,6 +450,17 @@ Store rx(RequestSensorData _, Store store){
     store.buttonChangeUnconsumed = false;
     
     
+    return store;
+}
+
+Store rx(InitIOAction _, Store store){
+    sensor_lib::setup();
+    store.state = IO_STATE;
+    return store;
+}
+
+Store rx(IOAction _, Store store){
+    sensor_lib::loop();
     return store;
 }
 
@@ -494,9 +505,12 @@ void loop(){
             if(__store.buttonChangeUnconsumed)
                 rx(RequestSensorData());
             break;
-//        case State::RECEIVING_SENSOR_LIST_STATE:
-//            //dummy transmission indicator
-//            break;
+        case State::INITIALISE_IO_STATE:
+            rx(InitIOAction());
+            break;
+        case State::IO_STATE:
+            rx(IOAction());
+            break;
     }
 
     delay(50);

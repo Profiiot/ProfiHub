@@ -221,66 +221,84 @@ fn sendList<Tp: serial::SerialPort> (port: &mut Tp, values :VecDeque<String>, na
     assert!(await_acknowledge(port).is_ok())
 }
 
+fn handshake_and_select_sensor<'a>(device :&str, sensors: &'a HashMap<String, Sensor>) -> Option<& 'a Sensor>{
+    let commands :HashMap<String, Regex> = load_upp_commands();
+    let mut port = serial::open(device).unwrap();
+    //    std::thread::sleep_ms(5000);
+
+    clean_reading(&mut port);
+
+
+    let node: FilterNode = match pollHandshake(&mut port, 0, 10) {
+        Some(node) => node,
+        None => return None
+    };
+
+    send_acknowledge(&mut port);
+
+
+    println!("Send Handshake");
+    send_line(&mut port, "UPP-HUB".to_string());
+
+    println!("Wait for Acknowledge");
+
+
+
+    let sensor_lines: VecDeque<String> = sensors.iter().map(
+        |sensor: (&String, &Sensor)|
+            format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
+    ).collect();
+
+
+    sendList(&mut port, sensor_lines, "SENSOR".to_string());
+
+    send_line(&mut port, "UPP-READY".to_string());
+    assert!(await_acknowledge(&mut port).is_ok());
+
+    await_command(&mut port, commands.get("UPP-ACK").unwrap().clone());
+
+    let sensor_id: String = match await_command(&mut port, commands.get("UPP-SELECT").unwrap().clone()) {
+        Some(v) => v.get("sensor_id").unwrap().clone(),
+        _       => return None,
+    };
+
+    let sensor: &Sensor = match sensors.iter().find(|&_sensor| _sensor.1.id.to_string() == sensor_id) {
+        Some(v) => v.clone().1.clone(),
+        _       => return None,
+    };
+
+    println!("{:?}", sensor.name);
+    Some(sensor)
+}
+
 fn main() {
     let commands :HashMap<String, Regex> = load_upp_commands();
     let matches  = process_arguments();
     let device   = matches.value_of("device").unwrap();
+    let sensors: HashMap<String, Sensor> = load_sensors();
+
     println!("Open {:?}", device);
 
-    {
-        let mut port = serial::open(device).unwrap();
-        //    std::thread::sleep_ms(5000);
+    let sensor :&Sensor = handshake_and_select_sensor(device, &sensors).unwrap();
 
-        clean_reading(&mut port);
-
-
-        let node: FilterNode = match pollHandshake(&mut port, 0, 10) {
-            Some(node) => node,
-            None => return
-        };
-
-        send_acknowledge(&mut port);
+    let sed          = "/usr/bin/sed";
+    let replace      = format!("###_LIB_PATH_###/{}\\/{}.ino", sensor.name, sensor.name);
+    let firmware_src = "firmware/src/sensorsLib/";
 
 
-        println!("Send Handshake");
-        send_line(&mut port, "UPP-HUB".to_string());
+    let sed_output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{} 's/{}/g' {}libIncludeTemplate.h > {}libInclude.h", sed, replace, firmware_src, firmware_src))
+        .output()
+        .expect("didn't start");
 
-        println!("Wait for Acknowledge");
+    println!("Replaced include: {:?}", sed_output);
 
-
-        let sensors: HashMap<String, Sensor> = load_sensors();
-
-        let sensor_lines: VecDeque<String> = sensors.iter().map(
-            |sensor: (&String, &Sensor)|
-                format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
-        ).collect();
-
-
-        sendList(&mut port, sensor_lines, "SENSOR".to_string());
-
-        send_line(&mut port, "UPP-READY".to_string());
-        assert!(await_acknowledge(&mut port).is_ok());
-
-        await_command(&mut port, commands.get("UPP-ACK").unwrap().clone());
-
-        let sensor_id: String = match await_command(&mut port, commands.get("UPP-SELECT").unwrap().clone()) {
-            Some(v) => v.get("sensor_id").unwrap().clone(),
-            _ => return,
-        };
-
-        let sensor: &Sensor = match sensors.iter().find(|&_sensor| _sensor.1.id.to_string() == sensor_id) {
-            Some(v) => v.1.clone(),
-            _ => return,
-        };
-
-        println!("{:?}", sensor.name);
-
-    }
-    let output = std::process::Command::new("sh")
+    let pio_output = std::process::Command::new("sh")
         .arg("-c")
         .arg("/usr/local/bin/platformio run -d firmware --upload-port /dev/cu.usbmodem1411 -t upload")
         .status()
         .expect("didn't start");
-    println!("Programmed: {:?}", output);
+    println!("Programmed: {:?}", pio_output);
 //    println!("Programmed");
 }
