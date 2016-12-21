@@ -174,6 +174,9 @@ fn process_arguments<'T>() -> clap::ArgMatches<'T>{
             .value_name("device Path")
             .required(true)
         )
+        .arg(Arg::with_name("platformio-bin")
+            .help("path to platformio binary")
+        )
         .get_matches();
 
     matches
@@ -224,52 +227,60 @@ fn main() {
     let device   = matches.value_of("device").unwrap();
     println!("Open {:?}", device);
 
-    let mut port = serial::open(device).unwrap();
+    {
+        let mut port = serial::open(device).unwrap();
+        //    std::thread::sleep_ms(5000);
 
-//    std::thread::sleep_ms(5000);
-
-    clean_reading(&mut port);
-
-
-    let node :FilterNode = match pollHandshake(&mut port, 0, 10){
-        Some(node) => node,
-        None => return
-    };
-
-    send_acknowledge(&mut port);
+        clean_reading(&mut port);
 
 
+        let node: FilterNode = match pollHandshake(&mut port, 0, 10) {
+            Some(node) => node,
+            None => return
+        };
 
-    println!("Send Handshake");
-    send_line(&mut port, "UPP-HUB".to_string());
-
-    println!("Wait for Acknowledge");
-
-
-    let sensors      :HashMap<String, Sensor> = load_sensors();
-
-    let sensor_lines :VecDeque<String> = sensors.iter().map(
-        |sensor :(&String, &Sensor)|
-        format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
-    ).collect();
+        send_acknowledge(&mut port);
 
 
-    sendList(&mut port, sensor_lines, "SENSOR".to_string());
+        println!("Send Handshake");
+        send_line(&mut port, "UPP-HUB".to_string());
 
-    send_line(&mut port, "UPP-READY".to_string());
-    assert!(await_acknowledge(&mut port).is_ok());
+        println!("Wait for Acknowledge");
 
-    await_command(&mut port, commands.get("UPP-ACK").unwrap().clone());
 
-    let sensor_id :String = match await_command(&mut port, commands.get("UPP-SELECT").unwrap().clone()) {
-        Some(v) => v.get("sensor_id").unwrap().clone(),
-              _ => return,
-    };
+        let sensors: HashMap<String, Sensor> = load_sensors();
 
-    let sensor :&Sensor = match sensors.iter().find(|&_sensor | _sensor.1.id.to_string() == sensor_id){
-        Some(v) => v.1.clone(),
-              _ => return,
-    };
+        let sensor_lines: VecDeque<String> = sensors.iter().map(
+            |sensor: (&String, &Sensor)|
+                format!("UPP-ENTRY {} {} {}", sensor.1.id, sensor.0, sensor.1.pictogram)
+        ).collect();
 
-    println!("{:?}", sensor.name);
+
+        sendList(&mut port, sensor_lines, "SENSOR".to_string());
+
+        send_line(&mut port, "UPP-READY".to_string());
+        assert!(await_acknowledge(&mut port).is_ok());
+
+        await_command(&mut port, commands.get("UPP-ACK").unwrap().clone());
+
+        let sensor_id: String = match await_command(&mut port, commands.get("UPP-SELECT").unwrap().clone()) {
+            Some(v) => v.get("sensor_id").unwrap().clone(),
+            _ => return,
+        };
+
+        let sensor: &Sensor = match sensors.iter().find(|&_sensor| _sensor.1.id.to_string() == sensor_id) {
+            Some(v) => v.1.clone(),
+            _ => return,
+        };
+
+        println!("{:?}", sensor.name);
+
+    }
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("/usr/local/bin/platformio run -d firmware --upload-port /dev/cu.usbmodem1411 -t upload")
+        .status()
+        .expect("didn't start");
+    println!("Programmed: {:?}", output);
+//    println!("Programmed");
 }
